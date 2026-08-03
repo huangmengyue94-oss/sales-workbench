@@ -9,6 +9,7 @@ const PORT = process.env.PORT || 3000;
 const DATA_DIR = process.env.DATA_DIR || __dirname;
 const DATA_FILE = path.join(DATA_DIR, 'data.json');
 const GH_TOKEN = process.env.GITHUB_TOKEN || '';
+const GIST_ID_ENV = process.env.GIST_ID || '';
 
 function DEFAULT_DATA(){
   return {
@@ -74,6 +75,26 @@ async function createGist(){
 
 async function initStorage(){
   if(GH_TOKEN){
+    // 优先使用环境变量中指定的 Gist ID
+    if(GIST_ID_ENV){
+      gistId = GIST_ID_ENV;
+      console.log('Using GIST_ID from env:', gistId);
+      // 验证这个 Gist 是否可访问
+      try{
+        const res = await fetch(`https://api.github.com/gists/${gistId}`,{
+          headers:{'Authorization':`Bearer ${GH_TOKEN}`,'User-Agent':'sales-workbench'}
+        });
+        if(res.ok){
+          console.log('GitHub Gist storage active - data will persist');
+          return;
+        }
+        console.error('GIST_ID from env is not accessible, falling back to find/create');
+        gistId = null;
+      }catch(e){
+        console.error('GIST_ID validation error:', e.message);
+        gistId = null;
+      }
+    }
     gistId = await findGist();
     if(!gistId) gistId = await createGist();
     if(gistId){
@@ -107,32 +128,22 @@ async function readData(){
   }
 }
 
-// Throttle writes to avoid GitHub API rate limits
-let lastWriteTime = 0;
-let pendingWrite = null;
-let writeTimer = null;
-
 async function writeData(data){
   if(gistId && GH_TOKEN){
-    // Throttle: at most 1 write per 3 seconds
-    const now = Date.now();
-    const wait = Math.max(0, 3000 - (now - lastWriteTime));
-    pendingWrite = data;
-    if(writeTimer) clearTimeout(writeTimer);
-    writeTimer = setTimeout(async()=>{
-      const toWrite = pendingWrite;
-      pendingWrite = null;
-      lastWriteTime = Date.now();
-      try{
-        await fetch(`https://api.github.com/gists/${gistId}`,{
-          method:'PATCH',
-          headers:{'Authorization':`Bearer ${GH_TOKEN}`,'Content-Type':'application/json','User-Agent':'sales-workbench'},
-          body:JSON.stringify({files:{'sales-data.json':{content:JSON.stringify(toWrite,null,2)}}})
-        });
-      }catch(e){
-        console.error('writeData gist error:',e.message);
+    try{
+      const res = await fetch(`https://api.github.com/gists/${gistId}`,{
+        method:'PATCH',
+        headers:{'Authorization':`Bearer ${GH_TOKEN}`,'Content-Type':'application/json','User-Agent':'sales-workbench'},
+        body:JSON.stringify({files:{'sales-data.json':{content:JSON.stringify(data,null,2)}}})
+      });
+      if(!res.ok){
+        console.error('writeData gist HTTP error:', res.status);
+      }else{
+        console.log('Data saved to Gist at', new Date().toISOString());
       }
-    }, wait);
+    }catch(e){
+      console.error('writeData gist error:',e.message);
+    }
     return;
   }
   writeDataFile(data);
